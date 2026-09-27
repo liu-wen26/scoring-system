@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+*.egg
+venv/
+*.db
+.env
+
+# Node
+node_modules/
+frontend/vue-app/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker/postgres_data/
+docker/redis_data/
+docker/rabbitmq_data/
+docker/minio_data/
+
+# Test
+.pytest_cache/
+.htmlcov
+coverage.xml
+
+# Uploads (test data)
+backend/app/uploads/
+
+# Temp
+part_*

@@ -1,0 +1,42 @@
+# Web Framework
+fastapi==0.110.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.9
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Database
+sqlalchemy==2.0.27
+psycopg2-binary==2.9.9
+alembic==1.13.1
+
+# Cache & Message Queue
+redis==5.0.1
+celery==5.3.6
+
+# OCR & Image
+paddleocr==2.7.3
+paddlepaddle==2.6.0
+opencv-python==4.9.0.80
+Pillow==10.2.0
+PyMuPDF==1.23.26
+
+# Storage
+minio==7.2.3
+
+# Utils
+pydantic==2.6.1
+pydantic-settings==2.1.0
+python-dotenv==1.0.1
+aiofiles==23.2.1
+
+# Data Analysis
+pandas==2.2.0
+numpy==1.26.4
+
+# Charts
+matplotlib==3.8.3
+
+# Testing
+pytest==8.0.0
+httpx==0.27.0

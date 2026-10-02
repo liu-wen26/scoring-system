@@ -1,135 +1,87 @@
 """
-OCR 识别模块测试
+OCR / 答案识别模块测试
+
+针对实际存在的 app.ocr.answer_detector.ChoiceAnswerDetector 做功能验证。
 """
 
-import pytest
 import numpy as np
-from unittest.mock import patch, MagicMock
+
+from app.ocr.answer_detector import ChoiceAnswerDetector, ChoiceConfig
 
 
-class TestImagePreprocessor:
-    """图像预处理测试"""
-
-    def test_denoise(self):
-        """测试去噪功能"""
-        from app.ocr.image.preprocess import ImagePreprocessor
-
-        preprocessor = ImagePreprocessor()
-        # 创建测试图像
-        image = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
-        result = preprocessor.denoise(image)
-
-        assert result is not None
-        assert result.shape == image.shape
-
-    def test_grayscale(self):
-        """测试灰度转换"""
-        from app.ocr.image.preprocess import ImagePreprocessor
-
-        preprocessor = ImagePreprocessor()
-        image = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
-        result = preprocessor.to_grayscale(image)
-
-        assert len(result.shape) == 2
-        assert result.shape == (100, 100)
-
-    def test_binarize(self):
-        """测试二值化"""
-        from app.ocr.image.preprocess import ImagePreprocessor
-
-        preprocessor = ImagePreprocessor()
-        gray = np.random.randint(0, 255, (100, 100), dtype=np.uint8)
-        result = preprocessor.binarize(gray)
-
-        assert result is not None
-        assert set(np.unique(result)).issubset({0, 255})
-
-    def test_enhance_contrast(self):
-        """测试对比度增强"""
-        from app.ocr.image.preprocess import ImagePreprocessor
-
-        preprocessor = ImagePreprocessor()
-        image = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
-        result = preprocessor.enhance_contrast(image)
-
-        assert result is not None
-        assert result.shape == image.shape
+def _make_question_row(width=400, height=100, option_count=4, filled_index=None):
+    """构造单行选择题图片：白色底，选定选项涂黑"""
+    image = np.full((height, width), 255, dtype=np.uint8)
+    if filled_index is not None:
+        option_width = width // option_count
+        x_start = filled_index * option_width
+        x_end = width if filled_index == option_count - 1 else (filled_index + 1) * option_width
+        image[:, x_start:x_end] = 0
+    return image
 
 
-class TestPerspectiveTransformer:
-    """透视变换测试"""
+class TestChoiceAnswerDetector:
+    """选择题答案检测测试"""
 
-    def test_order_points(self):
-        """测试点排序"""
-        from app.ocr.image.perspective import PerspectiveTransformer
-
-        transformer = PerspectiveTransformer()
-        points = np.array([
-            [100, 100],  # 左上
-            [300, 100],  # 右上
-            [300, 400],  # 右下
-            [100, 400]   # 左下
-        ])
-
-        ordered = transformer._order_points(points)
-
-        assert ordered is not None
-        assert ordered.shape == (4, 2)
-
-    def test_transform(self):
-        """测试透视变换"""
-        from app.ocr.image.perspective import PerspectiveTransformer
-
-        transformer = PerspectiveTransformer()
-        image = np.random.randint(0, 255, (500, 400, 3), dtype=np.uint8)
-
-        points = np.array([
-            [50, 50],
-            [350, 50],
-            [350, 450],
-            [50, 450]
-        ], dtype=np.float32)
-
-        result = transformer.transform(image, points)
-
-        assert result is not None
-        assert len(result.shape) == 3
-
-
-class TestAnswerDetector:
-    """答案检测测试"""
-
-    @patch("app.ocr.paddle_ocr.PaddleOCR")
-    def test_detect_choice(self, mock_ocr_class):
-        """测试选择题检测"""
-        from app.ocr.answer_detector import ChoiceAnswerDetector
-
-        # 模拟 OCR 结果
-        mock_ocr = MagicMock()
-        mock_ocr.ocr.return_value = [[
-            [[[10, 10], [30, 10], [30, 30], [10, 30]], ('A', 0.95)],
-            [[[50, 10], [70, 10], [70, 30], [50, 30]], ('B', 0.92)]
-        ]]
-        mock_ocr_class.return_value = mock_ocr
-
+    def test_detect_single_selected_option(self):
+        """涂黑第 3 个选项应识别为 C"""
         detector = ChoiceAnswerDetector()
-        # 创建模拟图像
-        image = np.ones((200, 400, 3), dtype=np.uint8) * 255
+        image = _make_question_row(filled_index=2)
 
-        # 由于需要真实 OCR，这里只测试初始化
-        assert detector is not None
+        result = detector.detect_single(image, 1)
 
-    def test_calculate_fill_ratio(self):
-        """测试涂写比例计算"""
-        from app.ocr.answer_detector import ChoiceAnswerDetector
+        assert result.selected_options == ["C"]
+        assert result.is_filled is True
+        assert result.confidence > 0.9
 
+    def test_detect_single_blank(self):
+        """全空白区域应判定为未填涂"""
         detector = ChoiceAnswerDetector()
-        # 全白区域
-        white_region = np.ones((50, 50), dtype=np.uint8) * 255
-        ratio_white = detector._calculate_fill_ratio(white_region)
-        assert ratio_white == 0.0
+        image = _make_question_row(filled_index=None)
 
-        # 全黑区域
-        black_region = np.zeros((50, 50), dtype=np.uint8)
-        ratio_black = detector._calculate_fill_ratio(black_region)
-        assert ratio_black == 1.0
+        result = detector.detect_single(image, 1)
+
+        assert result.selected_options == []
+        assert result.is_filled is False
+        assert result.confidence == 0.0
+
+    def test_detect_all_regions(self):
+        """多题区域批量识别，题号与答案一一对应"""
+        detector = ChoiceAnswerDetector()
+        regions = [
+            (0, 0, 400, 100),
+            (0, 100, 400, 100),
+            (0, 200, 400, 100),
+        ]
+        image = np.full((300, 400), 255, dtype=np.uint8)
+        image[0:100, 200:300] = 0      # 第 1 题 -> C
+        image[100:200, 0:100] = 0      # 第 2 题 -> A
+        image[200:300, 300:400] = 0    # 第 3 题 -> D
+
+        results = detector.detect_all(image, regions)
+
+        assert [r.question_number for r in results] == [1, 2, 3]
+        assert results[0].selected_options == ["C"]
+        assert results[1].selected_options == ["A"]
+        assert results[2].selected_options == ["D"]
+
+    def test_multi_select(self):
+        """多选题模式下应返回全部涂黑选项"""
+        detector = ChoiceAnswerDetector(ChoiceConfig(multi_select=True))
+        image = _make_question_row(filled_index=None)
+        image[:, 0:100] = 0      # A
+        image[:, 200:300] = 0    # C
+
+        result = detector.detect_single(image, 1)
+
+        assert set(result.selected_options) == {"A", "C"}
+
+    def test_custom_option_count(self):
+        """自定义选项数量（如 3 选项）"""
+        detector = ChoiceAnswerDetector(ChoiceConfig(option_count=3))
+        image = _make_question_row(width=300, option_count=3, filled_index=2)
+
+        result = detector.detect_single(image, 1)
+
+        assert detector.options == ["A", "B", "C"]
+        assert result.selected_options == ["C"]

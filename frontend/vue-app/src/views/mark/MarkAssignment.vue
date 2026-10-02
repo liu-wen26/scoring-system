@@ -4,6 +4,12 @@
     <div class="exam-header-bar">
       <el-page-header title="阅卷分工" @back="$router.back()" />
       <div class="exam-meta">
+        <el-select v-model="examId" placeholder="选择考试" style="width: 200px" @change="onExamChange">
+          <el-option v-for="exam in examList" :key="exam.id" :label="exam.examName" :value="exam.id" />
+        </el-select>
+        <el-select v-model="subjectId" placeholder="选择科目" style="width: 140px" :disabled="!subjectList.length" @change="loadAll">
+          <el-option v-for="s in subjectList" :key="s.subjectId" :label="s.subjectName" :value="s.subjectId" />
+        </el-select>
         <el-tag v-if="examStatus" :type="getStatusType(examStatus)">{{ getStatusText(examStatus) }}</el-tag>
         <span class="meta-item">{{ examGrade }}</span>
         <span class="meta-item">{{ subjectName }}</span>
@@ -192,19 +198,20 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getExam } from '@/api/exam'
+import { getExam, getExams } from '@/api/exam'
 import { getAnswerCardConfig } from '@/api/answerCard'
 import { markApi } from '@/api/mark'
 import { getUsers } from '@/api/user'
 
 const route = useRoute()
-const router = useRouter()
 
-const examId = Number(route.query.examId)
-const subjectId = Number(route.query.subjectId)
+const examId = ref(Number(route.query.examId) || null)
+const subjectId = ref(Number(route.query.subjectId) || null)
 
+const examList = ref([])
+const subjectList = ref([])
 const examStatus = ref('')
 const examGrade = ref('')
 const subjectName = ref('')
@@ -257,15 +264,49 @@ const statusMap = {
 
 const fetchExamInfo = async () => {
   try {
-    const res = await getExam(examId)
+    const res = await getExam(examId.value)
     examStatus.value = res.status
     examGrade.value = res.grade
     examTotalStudents.value = res.totalStudents || 0
-    const subject = res.subjects?.find(s => s.subjectId === subjectId)
+    subjectList.value = res.subjects || []
+    const subject = subjectList.value.find(s => s.subjectId === subjectId.value)
     subjectName.value = subject?.subjectName || ''
   } catch (error) {
     ElMessage.error('加载考试信息失败')
   }
+}
+
+const fetchExamList = async () => {
+  try {
+    const res = await getExams({ limit: 100 })
+    examList.value = res.items || []
+  } catch (error) {
+    console.error('获取考试列表失败:', error)
+  }
+}
+
+const onExamChange = async (id) => {
+  subjectId.value = null
+  subjectList.value = []
+  taskList.value = []
+  questionList.value = []
+  selectedQuestions.value = []
+  if (!id) return
+  const res = await getExam(id)
+  subjectList.value = res.subjects || []
+  if (subjectList.value.length === 1) {
+    subjectId.value = subjectList.value[0].subjectId
+    await loadAll()
+  } else {
+    await fetchExamInfo()
+  }
+}
+
+const loadAll = async () => {
+  if (!examId.value || !subjectId.value) return
+  await fetchExamInfo()
+  await fetchAnswerCardConfig()
+  await fetchAllocations()
 }
 
 const fetchUsers = async () => {
@@ -279,7 +320,7 @@ const fetchUsers = async () => {
 
 const fetchAnswerCardConfig = async () => {
   try {
-    const res = await getAnswerCardConfig(examId, subjectId)
+    const res = await getAnswerCardConfig(examId.value, subjectId.value)
     const regions = res.regions || []
     const subjectiveRegions = regions.filter(r => r.type === 'subjective' || r.type === 'subjective_region')
     const pagePreviews = res.pagePreviews || (res.templateImage ? [res.templateImage] : [])
@@ -317,7 +358,7 @@ const fetchAnswerCardConfig = async () => {
 const fetchAllocations = async () => {
   loading.value = true
   try {
-    const res = await markApi.getAllocations({ examId, subjectId })
+    const res = await markApi.getAllocations({ examId: examId.value, subjectId: subjectId.value })
     taskList.value = (res.items || [])
       .filter(item => {
         const nos = item.questionNos || []
@@ -364,8 +405,8 @@ const handleCreate = async () => {
   }
   try {
     await markApi.createAllocation({
-      examId,
-      subjectId,
+      examId: examId.value,
+      subjectId: subjectId.value,
       questionType: 'subjective',
       questionNos: [...selectedQuestions.value],
       userIds: [...createForm.userIds],
@@ -474,15 +515,13 @@ const getTaskStatusType = (status) => {
 }
 
 onMounted(async () => {
-  if (!examId || !subjectId) {
-    ElMessage.warning('缺少考试或学科参数')
-    router.back()
-    return
-  }
-  await fetchExamInfo()
+  await fetchExamList()
   await fetchUsers()
-  await fetchAnswerCardConfig()
-  await fetchAllocations()
+  if (examId.value && subjectId.value) {
+    await loadAll()
+  } else if (examId.value) {
+    await onExamChange(examId.value)
+  }
 })
 </script>
 
@@ -530,11 +569,15 @@ onMounted(async () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .panel-title {
   font-weight: 500;
   font-size: 16px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .panel-desc {
@@ -546,6 +589,8 @@ onMounted(async () => {
 .toolbar {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .question-grid {

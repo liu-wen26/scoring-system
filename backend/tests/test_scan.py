@@ -1,92 +1,113 @@
 """
 扫描上传模块测试
+
+覆盖图片直连上传、PDF 上传、参数校验与「按顺序关联」学生绑定。
+文件落盘与后台 OCR 处理通过 mock 隔离，避免测试依赖磁盘与识别模型。
 """
 
+from unittest.mock import patch, AsyncMock
+
 import pytest
-from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
-import numpy as np
-
-from app.main import app
-
-client = TestClient(app)
 
 
-class TestScanUpload:
-    """扫描上传 API 测试"""
-
-    def test_upload_image_success(self):
-        """测试图片上传成功"""
-        # 创建一个简单的测试图片
-        from io import BytesIO
-        image_data = BytesIO(b"fake image data")
-
-        response = client.post(
-            "/api/v1/scan/upload",
-            data={"exam_id": 1, "student_id": "2024001"},
-            files={"file": ("test.jpg", image_data, "image/jpeg")}
+@pytest.fixture
+def mock_scan_deps():
+    """隔离对象存储与后台 OCR 任务"""
+    with patch("app.api.v1.scan.MinIOStorage") as storage_cls, \
+            patch("app.api.v1.scan.process_scan_image") as task:
+        storage_cls.return_value.save_image = AsyncMock(
+            return_value="/uploads/1/2/2043/01/01/test.png"
         )
-        # 由于我们没有真正的文件处理，这里可能会返回 422 或 200
-        assert response.status_code in [200, 422]
+        yield storage_cls.return_value, task
 
-    def test_upload_pdf_success(self):
-        """测试 PDF 上传成功"""
-        from io import BytesIO
-        pdf_data = BytesIO(b"fake pdf data")
 
+PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+
+
+class TestImageUpload:
+    """图片上传 API 测试"""
+
+    def test_upload_image_success(self, client, mock_scan_deps):
+        """图片上传成功并返回扫描页信息"""
+        files = {"file": ("test.png", PNG_BYTES, "image/png")}
+        data = {
+            "exam_id": 1, "subject_id": 2, "page_number": 1,
+            "scan_mode": "direct", "binding_mode": "auto",
+        }
+
+        response = client.post("/api/v1/scan/upload/image", data=data, files=files)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["success"] is True
+        assert body["fileUrl"] == "/uploads/1/2/2043/01/01/test.png"
+        assert body["scanPageId"]
+        assert body["scanMode"] == "direct"
+
+    def test_upload_image_rejects_non_image(self, client, mock_scan_deps):
+        """非图片类型应返回 400"""
+        files = {"file": ("test.pdf", b"%PDF-1.4", "application/pdf")}
         response = client.post(
-            "/api/v1/scan/upload-pdf",
-            data={"exam_id": 1},
-            files={"file": ("test.pdf", pdf_data, "application/pdf")}
+            "/api/v1/scan/upload/image",
+            data={"exam_id": 1, "subject_id": 2},
+            files=files,
         )
-        assert response.status_code in [200, 422]
+        assert response.status_code == 400
 
-    def test_upload_without_file(self):
-        """测试不带文件上传"""
+    def test_upload_image_missing_file(self, client, mock_scan_deps):
+        """缺少文件应返回 422"""
         response = client.post(
-            "/api/v1/scan/upload",
-            data={"exam_id": 1}
+            "/api/v1/scan/upload/image",
+            data={"exam_id": 1, "subject_id": 2},
         )
         assert response.status_code == 422
 
-    def test_upload_progress(self):
-        """测试上传进度查询"""
-        response = client.get("/api/v1/scan/progress/1")
-        assert response.status_code == 200
-        data = response.json()
-        assert "progress" in data or "code" in data
+    def test_upload_image_sequential_binding(self, client, mock_scan_deps, students):
+        """按顺序关联：第一页绑定第一名学生"""
+        files = {"file": ("a.png", PNG_BYTES, "image/png")}
+        response = client.post(
+            "/api/v1/scan/upload/image",
+            data={"exam_id": 5, "subject_id": 6, "binding_mode": "sequential"},
+            files=files,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["studentId"] == students[0]
 
 
-class TestPDFParser:
-    """PDF 解析测试"""
+class TestPDFUpload:
+    """PDF 上传 API 测试"""
 
-    @patch("app.services.pdf_parser.fitz.open")
-    def test_pdf_parse(self, mock_fitz_open):
-        """测试 PDF 解析"""
-        from app.services.pdf_parser import PDFParser
+    def test_upload_pdf_rejects_non_pdf(self, client, mock_scan_deps):
+        """非 PDF 文件应返回 400"""
+        files = {"file": ("test.txt", b"not a pdf", "text/plain")}
+        response = client.post(
+            "/api/v1/scan/upload/pdf",
+            data={"exam_id": 1, "subject_id": 2},
+            files=files,
+        )
+        assert response.status_code == 400
 
-        # 模拟 PDF 文档
-        mock_doc = MagicMock()
-        mock_doc.__len__ = MagicMock(return_value=2)
-        mock_page = MagicMock()
-        mock_page.rect = MagicMock()
-        mock_page.rect.width = 595
-        mock_page.rect.height = 842
-        mock_doc.load_page.return_value = mock_page
-        mock_fitz_open.return_value = mock_doc
+    def test_upload_pdf_success(self, client, mock_scan_deps):
+        """PDF 解析成功返回页数与绑定信息"""
+        fake_result = {
+            "total_pages": 2,
+            "pages": [
+                {"file_url": "/uploads/1/2/x/p1.png", "page_number": 1},
+                {"file_url": "/uploads/1/2/x/p2.png", "page_number": 2},
+            ],
+            "student_bindings": [{"student_id": None}, {"student_id": None}],
+        }
+        with patch("app.api.v1.scan.PDFUploadService") as service_cls:
+            service_cls.return_value.process_upload = AsyncMock(return_value=fake_result)
 
-        parser = PDFParser(target_dpi=300)
-        # 由于需要真实文件，这里只测试初始化
-        assert parser.target_dpi == 300
+            files = {"file": ("test.pdf", b"%PDF-1.4\n", "application/pdf")}
+            response = client.post(
+                "/api/v1/scan/upload/pdf",
+                data={"exam_id": 1, "subject_id": 2, "binding_mode": "auto"},
+                files=files,
+            )
 
-    def test_detect_student_id(self):
-        """测试学号检测"""
-        from app.services.pdf_parser import PDFParser
-
-        parser = PDFParser()
-        # 创建一个模拟的页面图像
-        mock_image = np.ones((1000, 800, 3), dtype=np.uint8) * 255
-
-        # 由于没有真实的 OCR，测试应该返回 None
-        result = parser.detect_student_id(mock_image)
-        assert result is None or isinstance(result, str)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["success"] is True
+        assert body["totalPages"] == 2
+        assert len(body["pages"]) == 2

@@ -334,6 +334,9 @@
                 <el-tag v-if="studentInfoConfirmed" size="small" type="success" effect="dark" class="tag-right">
                   已确认
                 </el-tag>
+                <el-tag v-else-if="hasStudentRegions" size="small" type="success" effect="dark" class="tag-right">
+                  已设置
+                </el-tag>
                 <el-tag v-else size="small" type="warning" effect="dark" class="tag-right">
                   未设置
                 </el-tag>
@@ -356,8 +359,20 @@
               <div class="student-info-status">
                 <div class="status-item">
                   <span class="status-label">框选状态：</span>
-                  <span v-if="studentRegion" class="status-value success">已框选</span>
+                  <span v-if="hasStudentRegions" class="status-value success">已框选 {{ framedStudentFieldCount }} 个区域</span>
                   <span v-else class="status-value warning">未框选</span>
+                </div>
+              </div>
+
+              <div class="student-field-list">
+                <div v-for="f in studentFields" :key="f.key" class="student-field-item">
+                  <span class="field-label">{{ f.label }}</span>
+                  <span class="status-value" :class="getStudentRegion(f.key) ? 'success' : 'warning'">
+                    {{ getStudentRegion(f.key) ? '已框选' : '未框选' }}
+                  </span>
+                  <el-button type="primary" link size="small" @click="selectRegionByField(f.key)">
+                    {{ getStudentRegion(f.key) ? '重新框选' : '框选' }}
+                  </el-button>
                 </div>
               </div>
               
@@ -375,7 +390,7 @@
                 type="primary"
                 class="confirm-btn"
                 @click="confirmStudentInfo"
-                :disabled="!studentRegion"
+                :disabled="!hasStudentRegions"
               >
                 确认学生信息
               </el-button>
@@ -609,6 +624,7 @@ const studentFields = [
   { key: 'school', label: '学校' },
   { key: 'class', label: '班级' },
   { key: 'name', label: '姓名' },
+  { key: 'studentNo', label: '学号' },
   { key: 'examNo', label: '考号' },
   { key: 'seatNo', label: '座位号' }
 ]
@@ -760,6 +776,10 @@ const objectiveRegions = computed(() => allRegions.value.filter(r => r.type === 
 const subjectiveRegions = computed(() => allRegions.value.filter(r => r.type === 'subjective'))
 const studentRegions = computed(() => allRegions.value.filter(r => r.type === 'student'))
 const studentRegion = computed(() => allRegions.value.find(r => r.type === 'student' && r.field === 'studentInfo'))
+const hasStudentRegions = computed(() => studentRegions.value.length > 0)
+const framedStudentFieldCount = computed(() =>
+  studentFields.filter(f => allRegions.value.some(r => r.type === 'student' && r.field === f.key)).length
+)
 
 const splitCount = computed(() => {
   const start = parseInt(splitForm.startNo) || 0
@@ -833,7 +853,7 @@ const startSelectStudentInfo = () => {
 }
 
 const confirmStudentInfo = () => {
-  if (!studentRegion.value) {
+  if (!hasStudentRegions.value) {
     ElMessage.warning('请先框选学生信息区域')
     return
   }
@@ -1790,6 +1810,30 @@ const reprocessScans = async () => {
 .status-value.warning {
   color: #E6A23C;
   font-weight: 500;
+}
+
+.student-field-list {
+  margin-bottom: 12px;
+  border: 1px solid #EBEEF5;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.student-field-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.student-field-item + .student-field-item {
+  border-top: 1px solid #F2F6FC;
+}
+
+.student-field-item .field-label {
+  flex: 1;
+  color: #606266;
 }
 
 .example-content {

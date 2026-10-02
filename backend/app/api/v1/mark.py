@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.orm.attributes import flag_modified
 from typing import List, Optional
 from datetime import datetime
 
@@ -82,18 +83,26 @@ async def create_allocation(
     exam_id = data.get("exam_id")
     subject_id = data.get("subject_id")
 
-    # 未指定份数时，自动按实际扫描的答题卡数量统计；无扫描数据则回退到考试参考人数
+    # 未指定份数时，按实际扫描的学生数统计（去重，多页答题卡只算一份）；无绑定学生则退回页数
     total_papers = data.get("total_papers", 0) or 0
     if total_papers <= 0:
-        scan_count = db.query(func.count(ScanPage.id)).filter(
+        scan_students = db.query(func.count(func.distinct(ScanPage.student_id))).filter(
             ScanPage.exam_id == exam_id,
-            ScanPage.subject_id == subject_id
+            ScanPage.subject_id == subject_id,
+            ScanPage.student_id.isnot(None)
         ).scalar() or 0
-        if scan_count > 0:
-            total_papers = scan_count
+        if scan_students > 0:
+            total_papers = scan_students
         else:
-            exam = db.query(Exam).filter(Exam.id == exam_id).first()
-            total_papers = exam.total_students if exam and exam.total_students else 0
+            scan_count = db.query(func.count(ScanPage.id)).filter(
+                ScanPage.exam_id == exam_id,
+                ScanPage.subject_id == subject_id
+            ).scalar() or 0
+            if scan_count > 0:
+                total_papers = scan_count
+            else:
+                exam = db.query(Exam).filter(Exam.id == exam_id).first()
+                total_papers = exam.total_students if exam and exam.total_students else 0
 
     allocation = MarkAllocation(
         exam_id=exam_id, subject_id=subject_id,
@@ -225,6 +234,14 @@ async def get_paper_detail(
 
     mark_result = db.query(MarkResult).filter(MarkResult.scan_page_id == scan_page_id).first()
 
+    # 阅卷结果按学生聚合后，同一学生的非首页需要按 student_id 回查
+    if not mark_result and scan_page.student_id:
+        mark_result = db.query(MarkResult).filter(
+            MarkResult.exam_id == scan_page.exam_id,
+            MarkResult.subject_id == scan_page.subject_id,
+            MarkResult.student_id == scan_page.student_id
+        ).first()
+
     # 兼容没有 scan_page 关联的数据（直接按 student_id 补全）
     if mark_result and scan_page.student_id is None:
         scan_page.student_id = mark_result.student_id
@@ -313,7 +330,7 @@ async def get_mark_progress(
     if subject_id:
         query = query.filter(MarkResult.subject_id == subject_id)
     total = query.count()
-    marked = query.filter(MarkResult.status == "marked").count()
+    marked = query.filter(MarkResult.status.in_(["marked", "reviewed"])).count()
     avg_score = db.query(func.avg(MarkResult.total_score)).filter(MarkResult.exam_id == exam_id).scalar()
     max_score = db.query(func.max(MarkResult.total_score)).filter(MarkResult.exam_id == exam_id).scalar()
     min_score = db.query(func.min(MarkResult.total_score)).filter(MarkResult.exam_id == exam_id).scalar()
@@ -424,20 +441,21 @@ async def submit_question_score(
     question_no = str(data.get("question_no"))
     score = float(data.get("score", 0))
 
-    subjective_result = result.subjective_result or {"cuts": []}
-    if "scores" not in subjective_result:
-        subjective_result["scores"] = {}
-    subjective_result["scores"][question_no] = score
+    subjective_result = dict(result.subjective_result or {"cuts": []})
+    scores = dict(subjective_result.get("scores") or {})
+    scores[question_no] = score
+    subjective_result["scores"] = scores
 
     # 计算主观题总分
-    subjective_score = sum(float(v) for v in subjective_result["scores"].values())
+    subjective_score = round(sum(float(v) for v in scores.values()), 2)
     result.subjective_result = subjective_result
+    # 显式标记 JSON 字段已变更（原地修改不会被 SQLAlchemy 追踪）
+    flag_modified(result, "subjective_result")
     result.subjective_score = subjective_score
     result.total_score = float(result.choice_score or 0) + subjective_score
 
     # 只有所有主观题都批阅完，才标记为 marked
     cuts = subjective_result.get("cuts", [])
-    scores = subjective_result.get("scores", {})
     all_marked = all(str(c.get("question_no")) in scores for c in cuts) if cuts else True
     result.status = "marked" if all_marked else "marking"
     result.marked_by = current_user.id
@@ -445,6 +463,24 @@ async def submit_question_score(
 
     db.commit()
     db.refresh(result)
+
+    # 同步更新阅卷任务进度
+    allocation = db.query(MarkAllocation).filter(
+        MarkAllocation.exam_id == result.exam_id,
+        MarkAllocation.subject_id == result.subject_id
+    ).order_by(MarkAllocation.created_at.desc()).first()
+    if allocation:
+        allocation.marked_papers = db.query(func.count(MarkResult.id)).filter(
+            MarkResult.exam_id == result.exam_id,
+            MarkResult.subject_id == result.subject_id,
+            MarkResult.status.in_(["marked", "reviewed"])
+        ).scalar() or 0
+        if allocation.total_papers and allocation.marked_papers >= allocation.total_papers:
+            allocation.status = "completed"
+        elif allocation.marked_papers > 0:
+            allocation.status = "marking"
+        db.commit()
+
     return convert_keys({
         "success": True, "message": "分数提交成功",
         "result_id": result_id, "question_no": question_no,

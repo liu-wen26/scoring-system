@@ -85,6 +85,7 @@ async def upload_scan_image(
     student_id: Optional[int] = Form(None),
     page_number: int = Form(1),
     scan_mode: str = Form("direct"),
+    binding_mode: str = Form("auto"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -119,8 +120,10 @@ async def upload_scan_image(
         db.add(batch)
         db.flush()
 
-    # 自动绑定学生：如果没有手动指定 student_id，按顺序绑定
-    if not student_id:
+    # 学生绑定：
+    # - auto（默认）：交由 OCR 识别考号/姓名后按名册匹配（无学生信息页继承同批次上一页）
+    # - sequential：按上传顺序依次绑定学生
+    if not student_id and binding_mode == "sequential":
         from app.models.user import Student
         # 统计该考试科目已上传的扫描页数，用于确定当前序号
         existing_count = db.query(ScanPage).filter(
@@ -132,12 +135,13 @@ async def upload_scan_image(
         if students:
             student_id = students.id
 
+    binding_status = "bound" if student_id else "pending"
     # 创建扫描页记录
     scan_page = ScanPage(
         batch_id=batch.id, exam_id=exam_id, subject_id=subject_id,
         page_number=page_number, file_url=file_url,
         student_id=student_id,
-        binding_status="bound" if student_id else "pending",
+        binding_status=binding_status,
         status="pending"
     )
     db.add(scan_page)

@@ -12,6 +12,7 @@ from typing import Optional, Tuple
 
 import httpx
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.mark import AIMarkConfig, AIMarkTask, AIMarkLog, MarkResult, MarkDetail
 from app.models.exam import ExamQuestion
@@ -228,13 +229,15 @@ def submit_question_score(db: Session, result_id: int, question_no: str, score: 
     if not result:
         raise ValueError("阅卷结果不存在")
 
-    subjective_result = result.subjective_result or {"cuts": []}
-    if "scores" not in subjective_result:
-        subjective_result["scores"] = {}
-    subjective_result["scores"][str(question_no)] = float(score)
+    subjective_result = dict(result.subjective_result or {"cuts": []})
+    scores = dict(subjective_result.get("scores") or {})
+    scores[str(question_no)] = float(score)
+    subjective_result["scores"] = scores
 
-    subjective_score = sum(float(v) for v in subjective_result["scores"].values())
+    subjective_score = round(sum(float(v) for v in scores.values()), 2)
     result.subjective_result = subjective_result
+    # 显式标记 JSON 字段已变更（原地修改不会被 SQLAlchemy 追踪）
+    flag_modified(result, "subjective_result")
     result.subjective_score = subjective_score
     result.total_score = float(result.choice_score or 0) + subjective_score
     result.status = "marked"

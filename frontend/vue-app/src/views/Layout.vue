@@ -31,6 +31,7 @@
             <span>阅卷</span>
           </template>
           <el-menu-item index="/mark">阅卷监控</el-menu-item>
+          <el-menu-item index="/mark/assign">阅卷分工</el-menu-item>
           <el-menu-item index="/mark/my-tasks">我的阅卷任务</el-menu-item>
           <el-menu-item index="/mark/question">按题阅卷</el-menu-item>
         </el-sub-menu>

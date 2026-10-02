@@ -47,7 +47,7 @@
       
       <el-form :model="form" label-width="120px">
         <el-form-item label="选择考试" required>
-          <el-select v-model="form.examId" placeholder="请选择考试" style="width: 300px">
+          <el-select v-model="form.examId" placeholder="请选择考试" style="width: 300px" @change="onExamChange">
             <el-option
               v-for="exam in examList"
               :key="exam.id"
@@ -58,7 +58,7 @@
         </el-form-item>
         
         <el-form-item label="选择科目" required>
-          <el-select v-model="form.subjectId" placeholder="请选择科目" style="width: 300px">
+          <el-select v-model="form.subjectId" placeholder="请选择科目" style="width: 300px" :disabled="!subjectList.length">
             <el-option
               v-for="subject in subjectList"
               :key="subject.id"
@@ -75,7 +75,16 @@
       <template #header>
         <span>扫描上传</span>
       </template>
-      
+
+      <el-form :model="directForm" label-width="120px">
+        <el-form-item label="关联模式">
+          <el-radio-group v-model="directForm.bindingMode">
+            <el-radio label="auto">自动识别考号匹配名册</el-radio>
+            <el-radio label="sequential">按顺序关联</el-radio>
+          </el-radio-group>
+        </el-form-item>
+      </el-form>
+
       <div class="direct-upload">
         <el-upload
           drag
@@ -110,9 +119,9 @@
       <el-form :model="pdfForm" label-width="120px">
         <el-form-item label="关联模式">
           <el-radio-group v-model="pdfForm.bindingMode">
-            <el-radio label="auto">自动识别学号</el-radio>
+            <el-radio label="auto">自动识别考号匹配名册</el-radio>
             <el-radio label="sequential">按顺序关联</el-radio>
-            <el-radio label="manual">上传后手动关联</el-radio>
+            <el-radio label="manual">上传后自动关联</el-radio>
           </el-radio-group>
         </el-form-item>
         
@@ -187,6 +196,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import { getExams } from '@/api/exam'
+import { getStudents } from '@/api/user'
 
 const route = useRoute()
 const userStore = useUserStore()
@@ -207,24 +217,13 @@ const pdfForm = reactive({
   bindingMode: 'auto'
 })
 
+const directForm = reactive({
+  bindingMode: 'auto'
+})
+
 // 列表数据
 const examList = ref([])
-const subjectList = ref([
-  { id: 1, subjectName: '语文' },
-  { id: 2, subjectName: '数学' },
-  { id: 3, subjectName: '英语' },
-  { id: 4, subjectName: '物理' },
-  { id: 5, subjectName: '化学' },
-  { id: 6, subjectName: '生物学' },
-  { id: 7, subjectName: '道德与法治' },
-  { id: 8, subjectName: '历史' },
-  { id: 9, subjectName: '地理' },
-  { id: 10, subjectName: '信息科技' },
-  { id: 11, subjectName: '音乐' },
-  { id: 12, subjectName: '美术' },
-  { id: 13, subjectName: '体育与健康' },
-  { id: 14, subjectName: '综合实践活动' }
-])
+const subjectList = ref([])
 
 // 上传相关
 const uploadHeaders = computed(() => ({
@@ -234,25 +233,33 @@ const uploadHeaders = computed(() => ({
 const uploadData = computed(() => ({
   exam_id: form.examId,
   subject_id: form.subjectId,
-  scan_mode: 'direct'
+  scan_mode: 'direct',
+  binding_mode: directForm.bindingMode
 }))
 
-const pdfUploadData = computed(() => ({
-  exam_id: form.examId,
-  subject_id: form.subjectId,
-  binding_mode: pdfForm.bindingMode
-}))
+const pdfUploadData = computed(() => {
+  const data = {
+    exam_id: form.examId,
+    subject_id: form.subjectId,
+    binding_mode: pdfForm.bindingMode
+  }
+  if (pdfForm.bindingMode === 'sequential') {
+    data.student_list = JSON.stringify(
+      selectedStudents.value
+        .map(id => studentOptions.value.find(s => s.key === id))
+        .filter(Boolean)
+        .map(s => ({ id: s.key, name: s.label }))
+    )
+  }
+  return data
+})
 
 const uploadResults = ref([])
 
 // 学生选择
 const showStudentDialog = ref(false)
 const selectedStudents = ref([])
-const studentOptions = ref([
-  { key: 1, label: '张三 (2024001)' },
-  { key: 2, label: '李四 (2024002)' },
-  { key: 3, label: '王五 (2024003)' }
-])
+const studentOptions = ref([])
 
 // 上传前校验
 const beforeImageUpload = (file) => {
@@ -331,21 +338,33 @@ const confirmStudents = () => {
   ElMessage.success(`已选择 ${selectedStudents.value.length} 名学生`)
 }
 
+// 考试切换：按所选考试加载其科目
+const onExamChange = (examId) => {
+  form.subjectId = null
+  subjectList.value = []
+  const exam = examList.value.find(e => e.id === examId)
+  subjectList.value = (exam?.subjects || []).map(s => ({
+    id: s.subjectId,
+    subjectName: s.subjectName
+  }))
+  if (subjectList.value.length === 1) {
+    form.subjectId = subjectList.value[0].id
+  }
+}
+
 // 获取考试列表
 const fetchExams = async () => {
   try {
     const res = await getExams({ limit: 100 })
-    examList.value = res.items
+    examList.value = res.items || []
     if (queryExamId) {
       const target = examList.value.find(e => e.id === queryExamId)
       if (target) {
         form.examId = queryExamId
-      }
-    }
-    if (querySubjectId) {
-      const target = subjectList.value.find(s => s.id === querySubjectId)
-      if (target) {
-        form.subjectId = querySubjectId
+        onExamChange(queryExamId)
+        if (querySubjectId && subjectList.value.some(s => s.id === querySubjectId)) {
+          form.subjectId = querySubjectId
+        }
       }
     }
   } catch (error) {
@@ -353,8 +372,22 @@ const fetchExams = async () => {
   }
 }
 
+// 获取学生列表（用于按顺序关联）
+const fetchStudents = async () => {
+  try {
+    const res = await getStudents({ limit: 1000 })
+    studentOptions.value = (res.items || []).map(s => ({
+      key: s.id,
+      label: `${s.realName}${s.studentNo ? ' (' + s.studentNo + ')' : ''}`
+    }))
+  } catch (error) {
+    console.error('获取学生列表失败:', error)
+  }
+}
+
 onMounted(() => {
   fetchExams()
+  fetchStudents()
 })
 </script>
 
